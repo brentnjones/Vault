@@ -1,4 +1,4 @@
-# Vault Agent Injector on OpenShift - Overview for Customers
+# Vault Agent Injector on OpenShift
 
 ## What This Documentation Accomplishes
 
