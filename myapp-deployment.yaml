@@ -31,6 +31,8 @@ spec:
           password={{ .Data.data.password }}
           api_key={{ .Data.data.api_key }}
           {{ end }}
+        # Configure 30-second polling for demo responsiveness
+        vault.hashicorp.com/template-static-secret-render-interval: "30s"
     spec:
       serviceAccountName: myapp
       containers:
