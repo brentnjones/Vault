@@ -535,10 +535,13 @@ Check that secrets were injected:
 
 ```bash
 # Check pods are running
-oc get pods -l app=myapp
+oc get pods -l app=myapp -n default
 
 # Exec into the pod and verify secrets
-oc exec -it deployment/myapp -- cat /vault/secrets/config.txt
+oc exec -it deployment/myapp -c myapp -n default -- cat /vault/secrets/config.txt
+
+# or
+oc exec -it myapp-cdd6b6bc4-cl6dl -n default -- cat /vault/secrets/config.txt
 ```
 
 Expected output should show the rendered secrets:
