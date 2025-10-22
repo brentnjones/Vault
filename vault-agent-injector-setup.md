@@ -150,6 +150,7 @@ helm install vault hashicorp/vault \
   --set "server.image.repository=docker.io/hashicorp/vault" \
   --set "server.image.tag=1.15.6" \
   --set "server.ha.enabled=true" \
+  --set "server.ha.raft.enabled=true" \
   --set "server.ha.replicas=3" \
   --set "server.serviceAccount.create=false" \
   --set "server.serviceAccount.name=vault-server" \
@@ -310,28 +311,60 @@ oc get route vault -n vault
 
 The route should now show `edge/Redirect` in the TERMINATION column. You can now access the Vault Web UI at the route URL in your browser.
 
+### Fix Route Visibility in Topology View (Optional)
+
+If the route doesn't appear connected to Vault in the OpenShift topology view, add these labels and annotations:
+
+```bash
+# Add topology grouping labels
+oc label route vault -n vault app.kubernetes.io/part-of=vault app=vault app.openshift.io/runtime=vault
+oc label statefulset vault -n vault app.kubernetes.io/part-of=vault app=vault
+oc label service vault-active -n vault app.kubernetes.io/part-of=vault app=vault
+
+# Add topology connection annotations
+oc annotate route vault -n vault app.openshift.io/connects-to='[{"apiVersion":"apps/v1","kind":"StatefulSet","name":"vault"}]'
+oc annotate route vault -n vault app.openshift.io/vcs-uri="vault-cluster"
+oc annotate route vault -n vault app.openshift.io/runtime-namespace=vault
+```
+
 ## Step 4: Initialize and Unseal Vault (Option A only)
 
 If you deployed the full Vault server, initialize and unseal it:
 
 ### For Multi-Node (HA) Deployment:
 
+**Important:** The HA deployment requires proper Raft storage configuration. If you encounter Consul connection errors, ensure the Helm installation includes `--set "server.ha.raft.enabled=true"`.
+
 ```bash
-# Initialize Vault
-oc exec vault-0 -n vault -- vault operator init -key-shares=1 -key-threshold=1 -format=json > cluster-keys.json
+# Initialize Vault (using standard 5 keys with 3 threshold for security)
+oc exec vault-0 -n vault -- vault operator init -key-shares=5 -key-threshold=3 -format=json > cluster-keys.json
 
-# Extract unseal key and root token
-VAULT_UNSEAL_KEY=$(cat cluster-keys.json | jq -r ".unseal_keys_b64[]")
+# Extract root token for verification
 VAULT_ROOT_TOKEN=$(cat cluster-keys.json | jq -r ".root_token")
-
-# Display the values for verification
-echo "Unseal Key: $VAULT_UNSEAL_KEY"
 echo "Root Token: $VAULT_ROOT_TOKEN"
 
-# Unseal all Vault instances
-oc exec vault-0 -n vault -- vault operator unseal "$VAULT_UNSEAL_KEY"
-oc exec vault-1 -n vault -- vault operator unseal "$VAULT_UNSEAL_KEY"
-oc exec vault-2 -n vault -- vault operator unseal "$VAULT_UNSEAL_KEY"
+# Unseal vault-0 (leader) with 3 keys
+oc exec vault-0 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[0]')"
+oc exec vault-0 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[1]')"
+oc exec vault-0 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[2]')"
+
+# Have vault-1 and vault-2 join the Raft cluster
+oc exec vault-1 -n vault -- vault operator raft join http://vault-0.vault-internal:8200
+oc exec vault-2 -n vault -- vault operator raft join http://vault-0.vault-internal:8200
+
+# Unseal vault-1 with 3 keys
+oc exec vault-1 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[0]')"
+oc exec vault-1 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[1]')"
+oc exec vault-1 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[2]')"
+
+# Unseal vault-2 with 3 keys
+oc exec vault-2 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[0]')"
+oc exec vault-2 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[1]')"
+oc exec vault-2 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[2]')"
+
+# Verify cluster status
+oc exec vault-0 -n vault -- vault login "$VAULT_ROOT_TOKEN"
+oc exec vault-0 -n vault -- vault operator raft list-peers
 ```
 
 ### For Single-Node (Standalone) Deployment:
@@ -898,6 +931,41 @@ helm upgrade vault hashicorp/vault \
   --reuse-values \
   --set "injector.replicas=1"
 ```
+
+### HA Cluster Initialization Issues
+
+If you encounter Consul connection errors or initialization failures in HA mode:
+
+```bash
+# Check if Raft is properly configured
+oc get statefulset vault -n vault -o yaml | grep -A5 -B5 raft
+
+# If Raft is not enabled, you need to reinstall with proper configuration
+helm uninstall vault -n vault
+# Wait for pods to terminate completely
+oc get pods -n vault --watch
+
+# Reinstall with Raft enabled (critical for HA)
+helm install vault hashicorp/vault \
+  --namespace vault \
+  --set "server.ha.enabled=true" \
+  --set "server.ha.raft.enabled=true" \
+  # ... other settings
+
+# Check pod logs for Raft cluster formation
+oc logs vault-0 -n vault | grep -i raft
+oc logs vault-1 -n vault | grep -i raft
+oc logs vault-2 -n vault | grep -i raft
+
+# Verify cluster peers after initialization
+oc exec vault-0 -n vault -- vault operator raft list-peers
+```
+
+**Common HA Issues:**
+- **Missing Raft Configuration**: Ensure `server.ha.raft.enabled=true` is set
+- **Consul Errors**: These indicate missing Raft backend; reinstall with Raft
+- **StatefulSet Update Limitations**: HA configuration changes require complete reinstallation
+- **Pod Anti-Affinity**: Ensure you have 3+ schedulable nodes for HA deployment
 
 ### Authentication Issues
 

@@ -1,8 +1,8 @@
 #!/bin/bash
 # Demo Reset Utility
 
-echo "🔄 RESETTING VAULT AGENT INJECTOR DEMO"
-echo "======================================"
+echo "RESETTING VAULT AGENT INJECTOR DEMO"
+echo "===================================="
 echo ""
 
 # Reset secrets to known state
@@ -12,7 +12,7 @@ oc exec vault-0 -n vault -- vault kv put secret/myapp/config \
     password="demo-password" \
     api_key="DEMO-KEY-READY"
 
-echo "✅ Secrets reset in Vault"
+echo "SECRETS RESET in Vault"
 echo ""
 
 # Wait for propagation
@@ -29,7 +29,7 @@ echo "Pod status:"
 oc get pods -l app=myapp -n default
 echo ""
 
-echo "🎯 Demo environment is ready!"
+echo "DEMO ENVIRONMENT IS READY!"
 echo "   • Secrets reset to baseline"
 echo "   • 30-second update interval configured"
 echo "   • Application pod running normally"
