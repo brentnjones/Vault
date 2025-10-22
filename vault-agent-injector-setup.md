@@ -511,6 +511,81 @@ oc exec vault-0 -n vault -- vault kv get secret/myapp/config
 
 ## Step 8: Create Application with Injector Annotations
 
+### How Vault Agent Injection Works
+
+Vault Agent Injector uses **annotations** (not labels) on pod templates to automatically inject secrets. The injector is a Kubernetes mutating admission webhook that:
+
+1. **Monitors** pod creation in all namespaces
+2. **Detects** pods with Vault injection annotations
+3. **Mutates** the pod spec to add Vault Agent containers
+4. **Injects** secrets as files in the `/vault/secrets/` directory
+
+### Required Annotations for Secret Injection
+
+To enable secret injection, add these annotations to your pod template:
+
+```yaml
+annotations:
+  # Enable Vault Agent injection
+  vault.hashicorp.com/agent-inject: "true"
+  
+  # Specify the Vault role to use for authentication
+  vault.hashicorp.com/role: "myapp"
+  
+  # Define secrets to inject (one annotation per secret file)
+  vault.hashicorp.com/agent-inject-secret-<filename>: "vault/secret/path"
+  
+  # Optional: Custom template for secret rendering
+  vault.hashicorp.com/agent-inject-template-<filename>: |
+    {{- with secret "vault/secret/path" -}}
+    key1={{ .Data.data.key1 }}
+    key2={{ .Data.data.key2 }}
+    {{- end -}}
+```
+
+### Common Configuration Examples
+
+**Basic Secret Injection:**
+```yaml
+annotations:
+  vault.hashicorp.com/agent-inject: "true"
+  vault.hashicorp.com/role: "myapp"
+  vault.hashicorp.com/agent-inject-secret-config.txt: "secret/data/myapp/config"
+```
+
+**Custom Template with Multiple Values:**
+```yaml
+annotations:
+  vault.hashicorp.com/agent-inject: "true"
+  vault.hashicorp.com/role: "myapp"
+  vault.hashicorp.com/agent-inject-secret-database.env: "secret/data/myapp/database"
+  vault.hashicorp.com/agent-inject-template-database.env: |
+    {{- with secret "secret/data/myapp/database" -}}
+    DB_HOST={{ .Data.data.host }}
+    DB_PORT={{ .Data.data.port }}
+    DB_USER={{ .Data.data.username }}
+    DB_PASSWORD={{ .Data.data.password }}
+    {{- end -}}
+```
+
+**JSON Format Output:**
+```yaml
+annotations:
+  vault.hashicorp.com/agent-inject: "true"
+  vault.hashicorp.com/role: "myapp"
+  vault.hashicorp.com/agent-inject-secret-config.json: "secret/data/myapp/config"
+  vault.hashicorp.com/agent-inject-template-config.json: |
+    {
+      {{- with secret "secret/data/myapp/config" -}}
+      "username": "{{ .Data.data.username }}",
+      "password": "{{ .Data.data.password }}",
+      "api_key": "{{ .Data.data.api_key }}"
+      {{- end -}}
+    }
+```
+
+### Complete Application Example
+
 Create a sample application that uses the injector:
 
 ```yaml
@@ -588,6 +663,28 @@ api_key=abc123def456
 1. The secrets exist in Vault: `oc exec vault-0 -n vault -- vault kv get secret/myapp/config`
 2. The template syntax in annotations matches the secret field names
 3. Check vault agent logs: `oc logs <pod-name> -c vault-agent`
+
+## Quick Reference: Vault Agent Injection Annotations
+
+### Essential Annotations
+| Annotation | Purpose | Example Value |
+|------------|---------|---------------|
+| `vault.hashicorp.com/agent-inject` | Enable injection | `"true"` |
+| `vault.hashicorp.com/role` | Vault role for auth | `"myapp"` |
+| `vault.hashicorp.com/agent-inject-secret-<filename>` | Secret path | `"secret/data/myapp/config"` |
+| `vault.hashicorp.com/agent-inject-template-<filename>` | Custom template | See examples above |
+
+### Optional Annotations
+| Annotation | Purpose | Example Value |
+|------------|---------|---------------|
+| `vault.hashicorp.com/agent-pre-populate-only` | Init container mode | `"true"` |
+| `vault.hashicorp.com/agent-configmap` | Custom agent config | `"vault-agent-config"` |
+| `vault.hashicorp.com/namespace` | Vault namespace | `"myteam"` |
+
+### File Locations
+- **Injected secrets path**: `/vault/secrets/<filename>`
+- **Agent configuration**: `/vault/config/`
+- **Agent logs**: Available via `oc logs <pod> -c vault-agent`
 
 ## Advanced Configuration Options
 
