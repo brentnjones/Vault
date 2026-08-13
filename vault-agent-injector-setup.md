@@ -339,32 +339,38 @@ If you deployed the full Vault server, initialize and unseal it:
 # Initialize Vault (using standard 5 keys with 3 threshold for security)
 oc exec vault-0 -n vault -- vault operator init -key-shares=5 -key-threshold=3 -format=json > cluster-keys.json
 
-# Extract root token for verification
-VAULT_ROOT_TOKEN=$(cat cluster-keys.json | jq -r ".root_token")
-echo "Root Token: $VAULT_ROOT_TOKEN"
+# Extract keys locally. The cluster-keys.json file is created on the machine
+# running oc, not inside the Vault pod.
+VAULT_ROOT_TOKEN=$(jq -r '.root_token' cluster-keys.json)
+VAULT_UNSEAL_KEY_1=$(jq -r '.unseal_keys_b64[0]' cluster-keys.json)
+VAULT_UNSEAL_KEY_2=$(jq -r '.unseal_keys_b64[1]' cluster-keys.json)
+VAULT_UNSEAL_KEY_3=$(jq -r '.unseal_keys_b64[2]' cluster-keys.json)
 
 # Unseal vault-0 (leader) with 3 keys
-oc exec vault-0 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[0]')"
-oc exec vault-0 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[1]')"
-oc exec vault-0 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[2]')"
+oc exec vault-0 -n vault -- vault operator unseal "$VAULT_UNSEAL_KEY_1"
+oc exec vault-0 -n vault -- vault operator unseal "$VAULT_UNSEAL_KEY_2"
+oc exec vault-0 -n vault -- vault operator unseal "$VAULT_UNSEAL_KEY_3"
 
 # Have vault-1 and vault-2 join the Raft cluster
 oc exec vault-1 -n vault -- vault operator raft join http://vault-0.vault-internal:8200
 oc exec vault-2 -n vault -- vault operator raft join http://vault-0.vault-internal:8200
 
 # Unseal vault-1 with 3 keys
-oc exec vault-1 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[0]')"
-oc exec vault-1 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[1]')"
-oc exec vault-1 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[2]')"
+oc exec vault-1 -n vault -- vault operator unseal "$VAULT_UNSEAL_KEY_1"
+oc exec vault-1 -n vault -- vault operator unseal "$VAULT_UNSEAL_KEY_2"
+oc exec vault-1 -n vault -- vault operator unseal "$VAULT_UNSEAL_KEY_3"
 
 # Unseal vault-2 with 3 keys
-oc exec vault-2 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[0]')"
-oc exec vault-2 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[1]')"
-oc exec vault-2 -n vault -- vault operator unseal "$(cat cluster-keys.json | jq -r '.unseal_keys_b64[2]')"
+oc exec vault-2 -n vault -- vault operator unseal "$VAULT_UNSEAL_KEY_1"
+oc exec vault-2 -n vault -- vault operator unseal "$VAULT_UNSEAL_KEY_2"
+oc exec vault-2 -n vault -- vault operator unseal "$VAULT_UNSEAL_KEY_3"
 
-# Verify cluster status
-oc exec vault-0 -n vault -- vault login "$VAULT_ROOT_TOKEN"
-oc exec vault-0 -n vault -- vault operator raft list-peers
+# Verify cluster status and authenticate the Raft query with the local root token
+oc exec vault-0 -n vault -- vault status
+oc exec vault-0 -n vault -- env \
+  VAULT_ADDR=http://127.0.0.1:8200 \
+  VAULT_TOKEN="$VAULT_ROOT_TOKEN" \
+  vault operator raft list-peers
 ```
 
 ### For Single-Node (Standalone) Deployment:
@@ -446,15 +452,20 @@ subjects:
   namespace: vault
 EOF
 
-# Get the service account token
-SECRET_NAME=$(oc get serviceaccount vault-auth -n vault -o jsonpath='{.secrets[0].name}')
-TR_ACCOUNT_TOKEN=$(oc get secret $SECRET_NAME -n vault -o jsonpath='{.data.token}' | base64 --decode)
+# Generate a service account token locally. This works with OpenShift 4.8
+# clients that do not support `oc create token`.
+TR_ACCOUNT_TOKEN=$(oc sa new-token vault-auth -n vault)
 
-# Configure Kubernetes auth with service account
-vault write auth/kubernetes/config \
+# Configure Kubernetes auth inside the Vault pod. The CA file path exists
+# inside the pod, not on the local machine running oc.
+oc exec vault-0 -n vault -- env \
+  VAULT_ADDR=http://127.0.0.1:8200 \
+  VAULT_TOKEN="$VAULT_ROOT_TOKEN" \
+  TR_ACCOUNT_TOKEN="$TR_ACCOUNT_TOKEN" \
+  sh -c 'vault write auth/kubernetes/config \
     token_reviewer_jwt="$TR_ACCOUNT_TOKEN" \
-    kubernetes_host="https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT" \
-    kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    kubernetes_host="https://kubernetes.default.svc:443" \
+    kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt'
 ```
 
 ## Step 6: Create Vault Policies and Roles
